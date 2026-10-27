@@ -80,8 +80,12 @@ class CentroidTracker:
         object_centroids = list(self.objects.values())
 
         D = np.linalg.norm(np.array(object_centroids)[:, np.newaxis] - input_centroids, axis=2)
-        rows = D.min(axis=1).argsort()
-        cols = D.argmin(axis=1)[rows]
+        try:
+            from scipy.optimize import linear_sum_assignment
+            rows, cols = linear_sum_assignment(D)
+        except Exception:
+            rows = D.min(axis=1).argsort()
+            cols = D.argmin(axis=1)[rows]
 
         used_rows = set()
         used_cols = set()

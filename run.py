@@ -22,8 +22,10 @@ def run_demo():
     subprocess.run(cmd)
 
 
-def run_api(host="127.0.0.1", port=8000):
-    print(f"[Dispatcher] Khởi chạy FastAPI / Uvicorn Server tại http://{host}:{port}...")
+def run_api(host="127.0.0.1", port=8000, source=None):
+    if source is not None:
+        os.environ["SURVEILLANCE_SOURCE"] = str(source)
+    print(f"[Dispatcher] Khởi chạy FastAPI / Uvicorn Server tại http://{host}:{port} (Source: {source or 'Default'})...")
     cmd = [
         sys.executable, "-m", "uvicorn",
         "app.server_uvicorn.main:app",
@@ -76,7 +78,7 @@ def main():
     elif args.mode == "demo":
         run_demo()
     elif args.mode == "api":
-        run_api(args.host, args.port)
+        run_api(args.host, args.port, args.source)
     elif args.mode == "test":
         run_test()
     elif args.mode == "calibrate":

@@ -40,17 +40,25 @@ class VideoSurveillanceService:
         )
         self.env_engine = AdaptiveEnvironmentEngine()
 
-        sample_1 = os.path.join(WORKSPACE_ROOT, "data", "samples", "surveillance.avi")
-        sample_2 = os.path.join(WORKSPACE_ROOT, "test", "surveillance.avi")
-        self.video_source: Any = sample_1 if os.path.exists(sample_1) else sample_2
+        env_source = os.environ.get("SURVEILLANCE_SOURCE")
+        if env_source:
+            self.video_source = int(env_source) if env_source.isdigit() else env_source
+        else:
+            sample_1 = os.path.join(WORKSPACE_ROOT, "data", "samples", "surveillance.avi")
+            sample_2 = os.path.join(WORKSPACE_ROOT, "test", "surveillance.avi")
+            self.video_source = sample_1 if os.path.exists(sample_1) else sample_2
         self.running: bool = False
         self.is_paused: bool = False
+        self.pause_event: threading.Event = threading.Event()
+        self.pause_event.set()
         self.thread: Optional[threading.Thread] = None
         self.lock: threading.Lock = threading.Lock()
 
         # Cached outputs for streaming
         self.current_annotated_frame: Optional[np.ndarray] = None
         self.current_mask_frame: Optional[np.ndarray] = None
+        self.current_annotated_jpeg: Optional[bytes] = None
+        self.current_mask_jpeg: Optional[bytes] = None
         self.events_history = []
         self.current_stats: Dict[str, Any] = {
             "count_in": 0,
@@ -68,16 +76,22 @@ class VideoSurveillanceService:
     def pause(self):
         with self.lock:
             self.is_paused = True
+            self.pause_event.clear()
             self.current_stats["is_paused"] = True
 
     def resume(self):
         with self.lock:
             self.is_paused = False
+            self.pause_event.set()
             self.current_stats["is_paused"] = False
 
     def toggle_playback(self) -> bool:
         with self.lock:
             self.is_paused = not self.is_paused
+            if self.is_paused:
+                self.pause_event.clear()
+            else:
+                self.pause_event.set()
             self.current_stats["is_paused"] = self.is_paused
             return self.is_paused
 
@@ -110,6 +124,7 @@ class VideoSurveillanceService:
 
     def stop(self):
         self.running = False
+        self.pause_event.set()
         if self.thread:
             self.thread.join(timeout=2.0)
         print("[SurveillanceService] Stopped background worker.")
@@ -130,15 +145,21 @@ class VideoSurveillanceService:
             self.calibrator.save_config((pt1, pt2), d_threshold)
 
     def _worker_loop(self):
-        cap = cv2.VideoCapture(self.video_source)
+        source = self.video_source
+        if isinstance(source, str) and source.isdigit():
+            source = int(source)
+        cap = cv2.VideoCapture(source)
+
         while self.running:
             if self.is_paused:
-                time.sleep(0.04)
+                self.pause_event.wait(timeout=0.05)
                 continue
+
+            t_start = time.perf_counter()
 
             if not cap.isOpened():
                 time.sleep(0.5)
-                cap = cv2.VideoCapture(self.video_source)
+                cap = cv2.VideoCapture(source)
                 continue
 
             ret, frame = cap.read()
@@ -164,6 +185,12 @@ class VideoSurveillanceService:
                 extra_status="FASTAPI SURVEILLANCE ENGINE"
             )
 
+            # 3. Tối ưu: Mã hóa JPEG 1 lần duy nhất cho toàn bộ các client xem stream
+            ret_ann, buf_ann = cv2.imencode(".jpg", res["annotated_frame"], [cv2.IMWRITE_JPEG_QUALITY, 85])
+            ret_msk, buf_msk = cv2.imencode(".jpg", res["clean_mask"], [cv2.IMWRITE_JPEG_QUALITY, 80])
+            jpeg_ann = buf_ann.tobytes() if ret_ann else None
+            jpeg_msk = buf_msk.tobytes() if ret_msk else None
+
             # Cập nhật state an toàn luồng
             with self.lock:
                 if res["events"]:
@@ -181,6 +208,8 @@ class VideoSurveillanceService:
 
                 self.current_annotated_frame = res["annotated_frame"]
                 self.current_mask_frame = res["clean_mask"]
+                self.current_annotated_jpeg = jpeg_ann
+                self.current_mask_jpeg = jpeg_msk
                 self.current_stats = {
                     "count_in": res["count_in"],
                     "count_out": res["count_out"],
@@ -198,18 +227,16 @@ class VideoSurveillanceService:
                     "events": list(self.events_history[:25])
                 }
 
-            # Giữ nhịp ~30-40 FPS
-            time.sleep(0.025)
+            # Giữ nhịp ~30 FPS mượt mà dựa trên thời gian xử lý thực tế
+            t_elapsed = time.perf_counter() - t_start
+            t_sleep = max(0.001, 0.033 - t_elapsed)
+            time.sleep(t_sleep)
 
         cap.release()
 
     def get_latest_frame_jpeg(self, use_mask: bool = False) -> Optional[bytes]:
         with self.lock:
-            target = self.current_mask_frame if use_mask else self.current_annotated_frame
-            if target is None:
-                return None
-            ret, jpeg = cv2.imencode(".jpg", target)
-            return jpeg.tobytes() if ret else None
+            return self.current_mask_jpeg if use_mask else self.current_annotated_jpeg
 
     def get_stats(self) -> Dict[str, Any]:
         with self.lock:
