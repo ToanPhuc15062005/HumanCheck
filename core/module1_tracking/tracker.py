@@ -7,6 +7,12 @@ Giảng viên phụ trách: TS. Huỳnh Trung Trụ
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 
+try:
+    from scipy.optimize import linear_sum_assignment
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
 
 class CentroidTracker:
     """
@@ -80,10 +86,9 @@ class CentroidTracker:
         object_centroids = list(self.objects.values())
 
         D = np.linalg.norm(np.array(object_centroids)[:, np.newaxis] - input_centroids, axis=2)
-        try:
-            from scipy.optimize import linear_sum_assignment
+        if HAS_SCIPY:
             rows, cols = linear_sum_assignment(D)
-        except Exception:
+        else:
             rows = D.min(axis=1).argsort()
             cols = D.argmin(axis=1)[rows]
 

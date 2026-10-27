@@ -59,6 +59,7 @@ class VideoSurveillanceService:
         self.current_mask_frame: Optional[np.ndarray] = None
         self.current_annotated_jpeg: Optional[bytes] = None
         self.current_mask_jpeg: Optional[bytes] = None
+        self.last_stream_request_time: float = 0.0
         self.events_history = []
         self.current_stats: Dict[str, Any] = {
             "count_in": 0,
@@ -148,36 +149,57 @@ class VideoSurveillanceService:
         source = self.video_source
         if isinstance(source, str) and source.isdigit():
             source = int(source)
-        cap = cv2.VideoCapture(source)
+
+        is_live_stream = isinstance(source, int) or (
+            isinstance(source, str) and (source.startswith("rtsp://") or source.startswith("http://"))
+        )
+
+        def _open_capture(src):
+            if isinstance(src, int) and sys.platform.startswith("win"):
+                c = cv2.VideoCapture(src, cv2.CAP_DSHOW)
+                if c.isOpened():
+                    return c
+            return cv2.VideoCapture(src)
+
+        cap = _open_capture(source)
+
+        fps_meta = cap.get(cv2.CAP_PROP_FPS)
+        target_fps = fps_meta if (10.0 <= fps_meta <= 120.0) else 30.0
+        target_dt = 1.0 / target_fps
 
         while self.running:
             if self.is_paused:
-                self.pause_event.wait(timeout=0.05)
+                self.pause_event.wait(timeout=0.2)
                 continue
 
             t_start = time.perf_counter()
 
             if not cap.isOpened():
                 time.sleep(0.5)
-                cap = cv2.VideoCapture(source)
+                cap = _open_capture(source)
                 continue
 
             ret, frame = cap.read()
             if not ret or frame is None:
-                # Video lặp lại vô tận - xóa cache đối tượng tránh đếm ảo do nhảy frame
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                with self.lock:
-                    self.detector.tracker.objects.clear()
-                    self.detector.tracker.boxes.clear()
-                    self.detector.tracker.disappeared.clear()
-                    self.detector.tracker.history.clear()
-                    self.detector.tripwire.states.clear()
-                continue
+                if is_live_stream:
+                    # Webcam/Live stream bị rớt frame tạm thời -> chờ frame kế tiếp, KHÔNG reset tracking
+                    time.sleep(0.05)
+                    continue
+                else:
+                    # File video kết thúc -> Tua lại frame 0 và dọn tracker tránh đếm ảo
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    with self.lock:
+                        self.detector.tracker.objects.clear()
+                        self.detector.tracker.boxes.clear()
+                        self.detector.tracker.disappeared.clear()
+                        self.detector.tracker.history.clear()
+                        self.detector.tripwire.states.clear()
+                    continue
 
-            # 1. Module 3
+            # 1. Module 3: Thích ứng môi trường
             clean_mask, enhanced_frame, telemetry = self.env_engine.process(frame)
 
-            # 2. Module 1
+            # 2. Module 1: Phân đoạn, theo dõi và đếm qua vạch
             res = self.detector.process_frame(
                 frame=enhanced_frame,
                 clean_mask=clean_mask,
@@ -185,11 +207,16 @@ class VideoSurveillanceService:
                 extra_status="FASTAPI SURVEILLANCE ENGINE"
             )
 
-            # 3. Tối ưu: Mã hóa JPEG 1 lần duy nhất cho toàn bộ các client xem stream
-            ret_ann, buf_ann = cv2.imencode(".jpg", res["annotated_frame"], [cv2.IMWRITE_JPEG_QUALITY, 85])
-            ret_msk, buf_msk = cv2.imencode(".jpg", res["clean_mask"], [cv2.IMWRITE_JPEG_QUALITY, 80])
-            jpeg_ann = buf_ann.tobytes() if ret_ann else None
-            jpeg_msk = buf_msk.tobytes() if ret_msk else None
+            # 3. Tối ưu On-Demand Lazy Encoding: Chỉ nén JPEG nếu có ít nhất 1 client đang xem stream (trong 2.5s qua)
+            is_streaming_active = (time.time() - self.last_stream_request_time < 2.5)
+            if is_streaming_active:
+                ret_ann, buf_ann = cv2.imencode(".jpg", res["annotated_frame"], [cv2.IMWRITE_JPEG_QUALITY, 85])
+                ret_msk, buf_msk = cv2.imencode(".jpg", res["clean_mask"], [cv2.IMWRITE_JPEG_QUALITY, 80])
+                jpeg_ann = buf_ann.tobytes() if ret_ann else None
+                jpeg_msk = buf_msk.tobytes() if ret_msk else None
+            else:
+                jpeg_ann = None
+                jpeg_msk = None
 
             # Cập nhật state an toàn luồng
             with self.lock:
@@ -227,16 +254,35 @@ class VideoSurveillanceService:
                     "events": list(self.events_history[:25])
                 }
 
-            # Giữ nhịp ~30 FPS mượt mà dựa trên thời gian xử lý thực tế
-            t_elapsed = time.perf_counter() - t_start
-            t_sleep = max(0.001, 0.033 - t_elapsed)
-            time.sleep(t_sleep)
+            # Giữ nhịp khung hình: Webcam tự do theo phần cứng; File video giữ đúng target_dt
+            if is_live_stream:
+                time.sleep(0.001)
+            else:
+                t_elapsed = time.perf_counter() - t_start
+                t_sleep = max(0.001, target_dt - t_elapsed)
+                time.sleep(t_sleep)
 
         cap.release()
 
     def get_latest_frame_jpeg(self, use_mask: bool = False) -> Optional[bytes]:
         with self.lock:
-            return self.current_mask_jpeg if use_mask else self.current_annotated_jpeg
+            self.last_stream_request_time = time.time()
+            cached = self.current_mask_jpeg if use_mask else self.current_annotated_jpeg
+            if cached is not None:
+                return cached
+
+            # Nén tức thời nếu là frame đầu hoặc stream vừa kết nối lại sau khi ngủ
+            target = self.current_mask_frame if use_mask else self.current_annotated_frame
+            if target is None:
+                return None
+            quality = 80 if use_mask else 85
+            ret, buf = cv2.imencode(".jpg", target, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            encoded = buf.tobytes() if ret else None
+            if use_mask:
+                self.current_mask_jpeg = encoded
+            else:
+                self.current_annotated_jpeg = encoded
+            return encoded
 
     def get_stats(self) -> Dict[str, Any]:
         with self.lock:
