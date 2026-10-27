@@ -1,0 +1,16 @@
+# Core DIP & Matrix Computing
+numpy>=1.24.0
+opencv-python>=4.8.0
+scipy>=1.10.0
+
+# Software Architecture & Schemas
+pydantic>=2.0.0
+
+# Presentation Layer 1: Streamlit Interactive Demo
+streamlit>=1.30.0
+streamlit-image-coordinates>=0.4.0
+
+# Presentation Layer 2: Uvicorn & FastAPI Application Server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+websockets>=11.0
