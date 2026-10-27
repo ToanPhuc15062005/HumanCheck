@@ -438,8 +438,13 @@ if st.session_state.is_running and video_path is not None:
     while cap.isOpened() and st.session_state.is_running:
         ret, frame = cap.read()
         if not ret or frame is None:
-            # Lặp lại video nếu kết thúc file
+            # Lặp lại video nếu kết thúc file - xóa cache đối tượng tránh đếm ảo
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            detector.tracker.objects.clear()
+            detector.tracker.boxes.clear()
+            detector.tracker.disappeared.clear()
+            detector.tracker.history.clear()
+            detector.tripwire.states.clear()
             continue
 
         if st.session_state.reset_trigger:

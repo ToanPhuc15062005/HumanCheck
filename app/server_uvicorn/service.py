@@ -31,7 +31,7 @@ class VideoSurveillanceService:
 
     def __init__(self):
         self.calibrator = TripwireCalibrator(os.path.join(WORKSPACE_ROOT, "data", "configs", "tripwire_config.json"))
-        line = self.calibrator.load_config() or ((100, 240), (550, 240))
+        line = self.calibrator.load_config() or ((135, 38), (135, 213))
 
         self.detector = HumanDetectionModule(
             line_coords=line,
@@ -118,6 +118,7 @@ class VideoSurveillanceService:
         with self.lock:
             self.detector.reset()
             self.env_engine.reset()
+            self.events_history.clear()
             self.current_stats["count_in"] = 0
             self.current_stats["count_out"] = 0
             self.current_stats["inside"] = 0
@@ -142,8 +143,14 @@ class VideoSurveillanceService:
 
             ret, frame = cap.read()
             if not ret or frame is None:
-                # Video lặp lại vô tận
+                # Video lặp lại vô tận - xóa cache đối tượng tránh đếm ảo do nhảy frame
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                with self.lock:
+                    self.detector.tracker.objects.clear()
+                    self.detector.tracker.boxes.clear()
+                    self.detector.tracker.disappeared.clear()
+                    self.detector.tracker.history.clear()
+                    self.detector.tripwire.states.clear()
                 continue
 
             # 1. Module 3
@@ -181,6 +188,7 @@ class VideoSurveillanceService:
                     "active_objects_count": len(res["tracked_objects"]),
                     "fps": round(res["fps"], 1),
                     "is_night_mode": telemetry["is_night_mode"],
+                    "is_paused": self.is_paused,
                     "mean_luminance": round(telemetry["mean_luminance"], 1),
                     "tripwire": {
                         "pt1": [int(self.detector.tripwire.pt1[0]), int(self.detector.tripwire.pt1[1])],

@@ -26,7 +26,7 @@ class TrackerConfig(BaseModel):
 class TripwireConfig(BaseModel):
     """Cấu hình cho vạch ảo và vùng đệm an toàn (Module 2)."""
     line_coords: Tuple[Tuple[int, int], Tuple[int, int]] = Field(
-        default=((100, 240), (550, 240)),
+        default=((135, 38), (135, 213)),
         description="Tọa độ 2 điểm định nghĩa vạch ảo ((x1, y1), (x2, y2))"
     )
     d_threshold: float = Field(default=35.0, description="Khoảng cách vùng đệm an toàn Hysteresis (pixel)")

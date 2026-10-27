@@ -17,12 +17,15 @@ service = VideoSurveillanceService.get_instance()
 
 def mjpeg_frame_generator(use_mask: bool = False):
     """Generator sinh chuỗi frames định dạng MJPEG cho browser."""
-    while True:
-        jpeg_bytes = service.get_latest_frame_jpeg(use_mask=use_mask)
-        if jpeg_bytes is not None:
-            yield (b"--frame\r\n"
-                   b"Content-Type: image/jpeg\r\n\r\n" + jpeg_bytes + b"\r\n")
-        time.sleep(0.033)
+    try:
+        while True:
+            jpeg_bytes = service.get_latest_frame_jpeg(use_mask=use_mask)
+            if jpeg_bytes is not None:
+                yield (b"--frame\r\n"
+                       b"Content-Type: image/jpeg\r\n\r\n" + jpeg_bytes + b"\r\n")
+            time.sleep(0.033)
+    except (GeneratorExit, asyncio.CancelledError):
+        pass
 
 
 @router.get("/health", response_model=StandardResponseDTO)

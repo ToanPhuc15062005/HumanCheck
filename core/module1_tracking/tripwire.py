@@ -60,6 +60,16 @@ class TripwireCounter:
         cross = (self.pt2[0] - self.pt1[0]) * (py - self.pt1[1]) - (self.pt2[1] - self.pt1[1]) * (px - self.pt1[0])
         return float(cross / self.line_len)
 
+    def is_within_segment_projection(self, point: Tuple[int, int], margin: float = 0.35) -> bool:
+        """
+        Kiểm tra hình chiếu của điểm lên phương của vạch có nằm trong phạm vi đoạn thẳng (kèm biên mở rộng).
+        """
+        px, py = point
+        dx = float(self.pt2[0] - self.pt1[0])
+        dy = float(self.pt2[1] - self.pt1[1])
+        t = ((px - self.pt1[0]) * dx + (py - self.pt1[1]) * dy) / (self.line_len ** 2)
+        return (-margin) <= t <= (1.0 + margin)
+
     def update(self, objects: Dict[int, Tuple[int, int]]) -> Dict[str, Any]:
         """Cập nhật máy trạng thái cho tất cả các đối tượng và tiến hành đếm."""
         active_ids = set(objects.keys())
@@ -93,21 +103,22 @@ class TripwireCounter:
                 elif state["last_counted"] == "OUT" and current_side == "OUT_SIDE":
                     state["has_reached_safe_zone"] = True
 
-            # Chuyển trạng thái khi cắt qua vạch
+            # Chuyển trạng thái khi cắt qua vạch (kèm xác thực hình chiếu trong phạm vi đoạn thẳng)
             if prev_side is not None and prev_side != current_side:
-                if prev_side == "OUT_SIDE" and current_side == "IN_SIDE":
-                    if state["last_counted"] is None or (state["last_counted"] == "OUT" and state["has_reached_safe_zone"]):
-                        self.count_in += 1
-                        state["last_counted"] = "IN"
-                        state["has_reached_safe_zone"] = False
-                        events.append(("IN", obj_id))
+                if self.is_within_segment_projection(centroid, margin=0.35):
+                    if prev_side == "OUT_SIDE" and current_side == "IN_SIDE":
+                        if state["last_counted"] is None or (state["last_counted"] == "OUT" and state["has_reached_safe_zone"]):
+                            self.count_in += 1
+                            state["last_counted"] = "IN"
+                            state["has_reached_safe_zone"] = False
+                            events.append(("IN", obj_id))
 
-                elif prev_side == "IN_SIDE" and current_side == "OUT_SIDE":
-                    if state["last_counted"] is None or (state["last_counted"] == "IN" and state["has_reached_safe_zone"]):
-                        self.count_out += 1
-                        state["last_counted"] = "OUT"
-                        state["has_reached_safe_zone"] = False
-                        events.append(("OUT", obj_id))
+                    elif prev_side == "IN_SIDE" and current_side == "OUT_SIDE":
+                        if state["last_counted"] is None or (state["last_counted"] == "IN" and state["has_reached_safe_zone"]):
+                            self.count_out += 1
+                            state["last_counted"] = "OUT"
+                            state["has_reached_safe_zone"] = False
+                            events.append(("OUT", obj_id))
 
             state["direction"] = current_side
 

@@ -87,6 +87,11 @@ class TestHumanCheckArchitecture(unittest.TestCase):
         self.assertEqual(r3["count_out"], 1)
         self.assertEqual(r3["inside"], 0)
 
+        # 4. Đối tượng cắt qua đường kéo dài vô hạn nhưng ở ngoài đoạn thẳng -> Không đếm
+        tripwire.update({20: (900, 150)})
+        r_out_segment = tripwire.update({20: (900, 250)})
+        self.assertEqual(r_out_segment["count_in"], 1, "Không được đếm đối tượng ở ngoài 2 đầu mút đoạn thẳng")
+
     def test_module2_geometry(self):
         """Test giải tích hình học vạch ảo."""
         pt1 = (0, 100)
@@ -98,6 +103,15 @@ class TestHumanCheckArchitecture(unittest.TestCase):
         d_out = TripwireGeometry.signed_distance(pt1, pt2, (50, 50))
         d_in = TripwireGeometry.signed_distance(pt1, pt2, (50, 150))
         self.assertTrue((d_out * d_in) < 0, "Hai điểm hai bên vạch phải có khoảng cách trái dấu")
+
+        # Test hình chiếu vô hướng và giới hạn đoạn thẳng
+        t_inside = TripwireGeometry.compute_projection_factor(pt1, pt2, (50, 150))
+        self.assertAlmostEqual(t_inside, 0.5)
+        self.assertTrue(TripwireGeometry.is_within_segment(pt1, pt2, (50, 150)))
+
+        t_outside = TripwireGeometry.compute_projection_factor(pt1, pt2, (250, 150))
+        self.assertGreater(t_outside, 1.5)
+        self.assertFalse(TripwireGeometry.is_within_segment(pt1, pt2, (250, 150), margin=0.2))
 
     def test_module3_adaptive_lighting(self):
         """Test kéo sáng thích ứng ban đêm (Gamma + CLAHE)."""

@@ -69,3 +69,33 @@ class TripwireGeometry:
         px, py = point
         cross = (pt2[0] - pt1[0]) * (py - pt1[1]) - (pt2[1] - pt1[1]) * (px - pt1[0])
         return float(cross / line_len)
+
+    @staticmethod
+    def compute_projection_factor(
+        pt1: Tuple[int, int],
+        pt2: Tuple[int, int],
+        point: Tuple[int, int]
+    ) -> float:
+        """
+        Tính hệ số chiếu vô hướng t của point lên đoạn thẳng pt1-pt2.
+        t in [0, 1]: Hình chiếu nằm chính xác trong đoạn thẳng.
+        """
+        dx = float(pt2[0] - pt1[0])
+        dy = float(pt2[1] - pt1[1])
+        line_len_sq = max(1e-5, dx * dx + dy * dy)
+        px, py = point
+        t = ((px - pt1[0]) * dx + (py - pt1[1]) * dy) / line_len_sq
+        return float(t)
+
+    @staticmethod
+    def is_within_segment(
+        pt1: Tuple[int, int],
+        pt2: Tuple[int, int],
+        point: Tuple[int, int],
+        margin: float = 0.25
+    ) -> bool:
+        """
+        Kiểm tra hình chiếu của điểm có nằm trong phạm vi đoạn thẳng (kèm biên mở rộng) hay không.
+        """
+        t = TripwireGeometry.compute_projection_factor(pt1, pt2, point)
+        return (-margin) <= t <= (1.0 + margin)
