@@ -1,0 +1,57 @@
+{
+    "active_source": "data/samples/surveillance.avi",
+    "profiles": {
+        "data/samples/surveillance.avi": {
+            "display_name": "surveillance.avi",
+            "pt1": [
+                135,
+                38
+            ],
+            "pt2": [
+                135,
+                213
+            ],
+            "d_threshold": 35.0,
+            "type": "file"
+        },
+        "0": {
+            "display_name": "Webcam M\u1eb7c \u0110\u1ecbnh (C\u1ed5ng 0)",
+            "pt1": [
+                160,
+                100
+            ],
+            "pt2": [
+                480,
+                100
+            ],
+            "d_threshold": 35.0,
+            "type": "webcam"
+        },
+        "rtsp://default": {
+            "display_name": "IP Camera H\u00e0nh Lang",
+            "pt1": [
+                200,
+                300
+            ],
+            "pt2": [
+                800,
+                300
+            ],
+            "d_threshold": 40.0,
+            "type": "rtsp"
+        },
+        "test_source": {
+            "display_name": "test_source",
+            "pt1": [
+                10,
+                20
+            ],
+            "pt2": [
+                100,
+                200
+            ],
+            "d_threshold": 42.0,
+            "type": "file"
+        }
+    }
+}
