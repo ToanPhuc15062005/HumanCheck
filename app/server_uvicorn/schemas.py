@@ -2,7 +2,7 @@
 Pydantic Schemas for FastAPI Server (Data Transfer Objects)
 """
 
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union, Any, Dict
 from pydantic import BaseModel, Field
 
 
@@ -21,6 +21,9 @@ class TrackingStatsDTO(BaseModel):
     fps: float
     is_night_mode: bool
     mean_luminance: float
+    camera_status: Optional[str] = "online"
+    active_source: Optional[str] = None
+    resolution: Optional[List[int]] = None
 
 
 class EventDTO(BaseModel):
@@ -32,4 +35,22 @@ class EventDTO(BaseModel):
 class StandardResponseDTO(BaseModel):
     success: bool
     message: str
-    data: Optional[dict] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+class DeviceItemDTO(BaseModel):
+    id: Union[int, str] = Field(..., description="Mã định danh hoặc đường dẫn nguồn")
+    name: str = Field(..., description="Tên hiển thị trực quan")
+    type: str = Field("webcam", description="'webcam' | 'file' | 'rtsp'")
+    resolution: List[int] = Field(default_factory=lambda: [640, 480], description="[Width, Height]")
+    available: bool = Field(True, description="Khả dụng hay không")
+
+
+class DeviceListResponseDTO(BaseModel):
+    success: bool = True
+    active_source: Union[int, str]
+    devices: List[DeviceItemDTO]
+
+
+class DeviceSwitchRequestDTO(BaseModel):
+    source: Union[int, str] = Field(..., description="ID thiết bị webcam (0, 1), đường dẫn video hoặc URL RTSP")
