@@ -7,7 +7,7 @@ Cách sử dụng:
   - Chạy Streamlit Demo:       python run.py --mode=demo
   - Chạy FastAPI Uvicorn App:   python run.py --mode=api
   - Chạy Bộ Kiểm Thử (Tests):  python run.py --mode=test
-  - Cấu hình Vạch ảo (OpenCV):  python run.py --mode=calibrate
+  - Cấu hình Vạch ảo (OpenCV):  python run.py --mode=calibrate --source 0
 """
 
 import argparse
@@ -44,11 +44,12 @@ def run_test():
 
 def run_calibrate(video_path="data/samples/surveillance.avi"):
     print("[Dispatcher] Khởi chạy công cụ cấu hình vạch ảo OpenCV...")
-    from core.module2_tripwire_gui.calibrator import TripwireCalibrator
+    from core.module2_tripwire_gui.calibrator import TripwireCalibrator, normalize_video_source
     calibrator = TripwireCalibrator()
-    if not os.path.exists(video_path) and os.path.exists("test/surveillance.avi"):
-        video_path = "test/surveillance.avi"
-    chosen_line = calibrator.calibrate_with_opencv(video_path)
+    norm_source = normalize_video_source(video_path)
+    if isinstance(norm_source, str) and not os.path.exists(norm_source) and os.path.exists("test/surveillance.avi"):
+        norm_source = "test/surveillance.avi"
+    chosen_line = calibrator.calibrate_with_opencv(norm_source)
     print(f"[Dispatcher] Đã lưu tọa độ vạch ảo: {chosen_line}")
 
 
@@ -69,7 +70,7 @@ def main():
     )
     parser.add_argument("--host", default="127.0.0.1", help="Host IP cho API")
     parser.add_argument("--port", type=int, default=8000, help="Port cho API")
-    parser.add_argument("--source", default="data/samples/surveillance.avi", help="Nguồn video để cấu hình vạch")
+    parser.add_argument("--source", default="data/samples/surveillance.avi", help="Nguồn video để cấu hình vạch hoặc chạy API")
 
     args = parser.parse_args()
 
