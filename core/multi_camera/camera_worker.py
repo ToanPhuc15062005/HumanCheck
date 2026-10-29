@@ -138,3 +138,4 @@ class CameraWorker:
     def get_stats(self) -> Dict[str, Any]:
         with self.lock:
             return dict(self.stats)
+

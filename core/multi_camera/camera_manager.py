@@ -64,3 +64,4 @@ class SurveillanceMultiStreamManager:
         for worker in self.workers.values():
             worker.stop()
         self.workers.clear()
+
