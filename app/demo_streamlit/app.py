@@ -3,14 +3,13 @@ STREAMLIT DEMO: HỆ THỐNG GIÁM SÁT THÔNG MINH & ĐẾM NGƯỜI QUA LẠI
 Môn học: Xử lý ảnh (Digital Image Processing) - PTIT HCM
 Giảng viên phụ trách: TS. Huỳnh Trung Trụ
 Mô hình Pure DIP: Không dùng AI/Deep Learning, hiệu năng cao, thích ứng môi trường.
-Tính năng mới: Interactive Canvas Overlay cho phép kẻ vạch phân cách trực tiếp bằng chuột.
+Tính năng mới: Interactive Canvas Overlay, Hot-switching Webcam / IP Camera RTSP & Chống Khóa Thiết Bị DirectShow.
 """
 
 import os
 import sys
 import time
 import tempfile
-import io
 import cv2
 import numpy as np
 import pandas as pd
@@ -26,8 +25,9 @@ if WORKSPACE_ROOT not in sys.path:
 from core.module1_tracking.pipeline import HumanDetectionModule
 from core.module1_tracking.tripwire import TripwireCounter
 from core.module1_tracking.visualizer import SurveillanceVisualizer
-from core.module2_tripwire_gui.calibrator import TripwireCalibrator
+from core.module2_tripwire_gui.calibrator import TripwireCalibrator, normalize_video_source
 from core.module3_adaptive_env.engine import AdaptiveEnvironmentEngine
+from core.device_scanner import scan_available_devices, get_profile_for_source, save_camera_profile
 
 
 # ==============================================================================
@@ -69,7 +69,10 @@ st.markdown("""
 # ==============================================================================
 # QUẢN LÝ SESSION STATE
 # ==============================================================================
-calibrator = TripwireCalibrator(os.path.join(WORKSPACE_ROOT, "data", "configs", "tripwire_config.json"))
+calibrator = TripwireCalibrator(
+    config_path=os.path.join(WORKSPACE_ROOT, "data", "configs", "tripwire_config.json"),
+    profile_path=os.path.join(WORKSPACE_ROOT, "data", "configs", "cameras_profile.json")
+)
 saved_line = calibrator.load_config() or ((80, 160), (280, 160))
 
 def init_session_state():
@@ -87,32 +90,60 @@ def init_session_state():
         st.session_state.temp_click_pts = []
     if "last_canvas_time" not in st.session_state:
         st.session_state.last_canvas_time = 0
+    if "preview_cache" not in st.session_state:
+        st.session_state.preview_cache = {}
 
 init_session_state()
 
 
 # ==============================================================================
-# HÀM TRỢ GIÚP: ĐỌC FRAME XEM TRƯỚC & VẼ VẠCH PHÂN CÁCH TRỰC QUAN
+# HÀM TRỢ GIÚP: ĐỌC FRAME XEM TRƯỚC (BỘ ĐỆM TRÁNH KHÓA DIRECTSHOW) & VẼ VẠCH
 # ==============================================================================
-def get_preview_frame(source):
-    """Trích xuất 1 frame xem trước từ nguồn video/webcam."""
+def get_preview_frame(source, force_refresh=False):
+    """
+    Trích xuất 1 frame xem trước từ nguồn video/webcam với bộ đệm cache.
+    Tránh mở lại VideoCapture liên tục gây khóa thiết bị trên DirectShow.
+    """
     if source is None:
         return np.zeros((240, 320, 3), dtype=np.uint8)
+
+    cache_key = str(source)
+    if not force_refresh and cache_key in st.session_state.preview_cache:
+        return st.session_state.preview_cache[cache_key]
+
     try:
-        cap = cv2.VideoCapture(source)
+        norm_src = normalize_video_source(source)
+        if isinstance(norm_src, int) and sys.platform.startswith("win"):
+            cap = cv2.VideoCapture(norm_src, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                for _ in range(5):
+                    cap.read()
+        else:
+            cap = cv2.VideoCapture(norm_src)
+
         ret, frame = cap.read()
         cap.release()
+
         if ret and frame is not None:
+            # Chuẩn hóa nếu kích thước quá lớn
+            h, w = frame.shape[:2]
+            if w > 640:
+                frame = cv2.resize(frame, (640, int(h * 640 / w)), interpolation=cv2.INTER_AREA)
+            st.session_state.preview_cache[cache_key] = frame
             return frame
-    except Exception:
-        pass
-    return np.zeros((240, 320, 3), dtype=np.uint8)
+    except Exception as e:
+        print(f"[Streamlit] Không thể lấy preview frame: {e}")
+
+    # Fallback frame mặc định
+    blank = np.zeros((240, 320, 3), dtype=np.uint8)
+    cv2.putText(blank, "No Video Signal", (40, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+    return blank
 
 
 def render_tripwire_preview(base_frame, pt1, pt2, d_thresh, temp_pt=None):
     """Vẽ vạch phân cách, mũi tên chiều vào (IN) và vùng đệm an toàn lên frame xem trước."""
     canvas_img = base_frame.copy()
-    
+
     # Nếu đang chọn điểm thứ nhất ở chế độ Click
     if temp_pt is not None:
         cv2.circle(canvas_img, temp_pt, 7, (0, 0, 255), -1, cv2.LINE_AA)
@@ -124,17 +155,17 @@ def render_tripwire_preview(base_frame, pt1, pt2, d_thresh, temp_pt=None):
         counter = TripwireCounter((pt1, pt2), d_threshold=d_thresh)
         viz = SurveillanceVisualizer()
         canvas_img = viz.draw_tripwire(canvas_img, counter)
-        
+
         # Vẽ Điểm A (Đỏ)
         cv2.circle(canvas_img, pt1, 7, (0, 0, 255), -1, cv2.LINE_AA)
         cv2.putText(canvas_img, f"A ({pt1[0]}, {pt1[1]})", (pt1[0] + 8, pt1[1] - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2, cv2.LINE_AA)
-        
+
         # Vẽ Điểm B (Xanh biển)
         cv2.circle(canvas_img, pt2, 7, (255, 100, 0), -1, cv2.LINE_AA)
         cv2.putText(canvas_img, f"B ({pt2[0]}, {pt2[1]})", (pt2[0] + 8, pt2[1] - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 100, 0), 2, cv2.LINE_AA)
-        
+
         # Vẽ Mũi tên chỉ hướng VÀO (IN) vuông góc vạch
         cx = int((pt1[0] + pt2[0]) / 2)
         cy = int((pt1[1] + pt2[1]) / 2)
@@ -143,25 +174,30 @@ def render_tripwire_preview(base_frame, pt1, pt2, d_thresh, temp_pt=None):
         cv2.arrowedLine(canvas_img, (cx, cy), arrow_end, (0, 255, 128), 2, tipLength=0.35, line_type=cv2.LINE_AA)
         cv2.putText(canvas_img, "HUONG VAO (IN)", (arrow_end[0] + 4, arrow_end[1] + 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 128), 2, cv2.LINE_AA)
-        
+
     return canvas_img
 
 
 # ==============================================================================
-# SIDEBAR: CẤU HÌNH THAM SỐ 3 MODULES
+# SIDEBAR: CẤU HÌNH THAM SỐ 3 MODULES & CHỌN NGUỒN ĐA THIẾT BỊ
 # ==============================================================================
 st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/e/e0/Logo_PTIT.png", width=120)
 st.sidebar.markdown("### 🎛️ Bảng Điều Khiển Giám Sát")
 
-# Nguồn Video
+# Nguồn Video Đa Thiết Bị
 video_source_type = st.sidebar.radio(
     "Nguồn Video:",
-    ["Video Mẫu (surveillance.avi)", "Tải lên File Video", "Webcam"],
+    [
+        "📁 Video Mẫu (surveillance.avi)",
+        "📤 Tải lên File Video",
+        "📹 Webcam Phần Cứng",
+        "🌐 IP Camera / Luồng RTSP"
+    ],
     index=0
 )
 
 video_path = None
-if video_source_type == "Video Mẫu (surveillance.avi)":
+if video_source_type == "📁 Video Mẫu (surveillance.avi)":
     sample_1 = os.path.join(WORKSPACE_ROOT, "data", "samples", "surveillance.avi")
     sample_2 = os.path.join(WORKSPACE_ROOT, "test", "surveillance.avi")
     if os.path.exists(sample_1):
@@ -170,14 +206,27 @@ if video_source_type == "Video Mẫu (surveillance.avi)":
         video_path = sample_2
     else:
         st.sidebar.error("Không tìm thấy file data/samples/surveillance.avi!")
-elif video_source_type == "Tải lên File Video":
+elif video_source_type == "📤 Tải lên File Video":
     uploaded_file = st.sidebar.file_uploader("Chọn video (mp4, avi):", type=["mp4", "avi"])
     if uploaded_file is not None:
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(uploaded_file.read())
         video_path = tfile.name
-else:
-    video_path = 0  # Webcam index
+elif video_source_type == "📹 Webcam Phần Cứng":
+    cam_col1, cam_col2 = st.sidebar.columns([3, 1])
+    with cam_col1:
+        cam_idx = st.selectbox("Chọn cổng Webcam:", options=[0, 1, 2, 3], index=0)
+    with cam_col2:
+        if st.button("🔍", help="Quét lại thiết bị webcam"):
+            st.session_state.preview_cache.clear()
+            st.rerun()
+    video_path = int(cam_idx)
+elif video_source_type == "🌐 IP Camera / Luồng RTSP":
+    rtsp_url = st.sidebar.text_input(
+        "Nhập địa chỉ RTSP / HTTP URL:",
+        value="rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mp4"
+    )
+    video_path = rtsp_url.strip()
 
 # ------------------------------------------------------------------------------
 # Cấu hình Module 2: Vạch ảo Tripwire
@@ -220,7 +269,7 @@ enable_shock = st.sidebar.checkbox("Fast Reset khi đổi sáng (Bật/Tắt đ�
 # KHUNG CHÍNH (MAIN DASHBOARD)
 # ==============================================================================
 st.markdown('<div class="main-header">🛡️ Hệ Thống Giám Sát Thông Minh & Đếm Người Qua Lại (Pure DIP)</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Đồ án môn Xử lý ảnh | PTIT HCM | TS. Huỳnh Trung Trụ | Kiến trúc phân tầng Hybrid</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Đồ án môn Xử lý ảnh | PTIT HCM | TS. Huỳnh Trung Trụ | Hỗ trợ Hot-Switch Đa Camera & RTSP Stream</div>', unsafe_allow_html=True)
 
 # Các nút điều khiển chính
 ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1.2, 1.2, 3.6])
@@ -251,25 +300,25 @@ st.markdown("---")
 
 
 # ==============================================================================
-# 🎯 TÍNH NĂNG MỚI: OVERLAY KẺ VẠCH PHÂN CÁCH TRỰC TIẾP TRÊN CAMERA
+# 🎯 TÍNH NĂNG: OVERLAY KẺ VẠCH PHÂN CÁCH TRỰC TIẾP TRÊN CAMERA
 # ==============================================================================
 with st.expander("✏️ CÔNG CỤ KẺ VẠCH PHÂN CÁCH TRỰC TIẾP TRÊN CAMERA (INTERACTIVE OVERLAY)", expanded=(not st.session_state.is_running)):
     st.markdown("""
     <div class="overlay-badge">
         <b>🎯 Hướng dẫn kẻ vạch:</b> Chọn chế độ bên dưới và dùng chuột thao tác trực tiếp trên khung hình camera.
-        Vạch phân cách sẽ tự động cập nhật ngay lập tức vào thuật toán đếm và lưu vào cấu hình.
+        Vạch phân cách sẽ tự động cập nhật ngay lập tức vào thuật toán đếm và lưu đồng bộ đa thiết bị (Dual-Write).
     </div>
     """, unsafe_allow_html=True)
 
     tool_col1, tool_col2 = st.columns([2.5, 1.5])
-    
+
     with tool_col2:
         draw_mode = st.radio(
             "Chế độ thao tác chuột:",
             ["🖱️ Kéo - Thả chuột (Drag & Drop Line)", "👆 Click lần lượt 2 điểm (A rồi B)"],
             index=0
         )
-        
+
         pt1 = st.session_state.tripwire_pt1
         pt2 = st.session_state.tripwire_pt2
         dx = float(pt2[0] - pt1[0])
@@ -286,19 +335,21 @@ with st.expander("✏️ CÔNG CỤ KẺ VẠCH PHÂN CÁCH TRỰC TIẾP TRÊN 
         - 🛡️ **Vùng đệm an toàn:** `±{d_threshold:.0f} px`
         """)
 
-        col_btn_reset, col_btn_save = st.columns(2)
-        with col_btn_reset:
-            if st.button("🔄 Đặt lại mặc định", use_container_width=True):
-                st.session_state.tripwire_pt1 = (80, 160)
-                st.session_state.tripwire_pt2 = (280, 160)
-                st.session_state.temp_click_pts = []
-                calibrator.save_config((st.session_state.tripwire_pt1, st.session_state.tripwire_pt2), d_threshold)
+        col_btn_refresh_preview, col_btn_save = st.columns(2)
+        with col_btn_refresh_preview:
+            if st.button("🔄 Chụp lại frame", help="Làm mới khung hình xem trước từ camera", use_container_width=True):
+                get_preview_frame(video_path, force_refresh=True)
                 st.rerun()
 
         with col_btn_save:
             if st.button("💾 Lưu cấu hình", use_container_width=True):
-                calibrator.save_config((st.session_state.tripwire_pt1, st.session_state.tripwire_pt2), d_threshold)
-                st.success("✅ Đã lưu vào data/configs/tripwire_config.json")
+                save_camera_profile(
+                    source=video_path,
+                    pt1=st.session_state.tripwire_pt1,
+                    pt2=st.session_state.tripwire_pt2,
+                    d_threshold=d_threshold
+                )
+                st.success("✅ Đã lưu cấu hình vạch ảo đồng bộ (Dual-Write)!")
 
     with tool_col1:
         # Lấy frame nền xem trước từ camera / video
@@ -355,7 +406,12 @@ with st.expander("✏️ CÔNG CỤ KẺ VẠCH PHÂN CÁCH TRỰC TIẾP TRÊN 
 
                         st.session_state.tripwire_pt1 = (x1_d, y1_d)
                         st.session_state.tripwire_pt2 = (x2_d, y2_d)
-                        calibrator.save_config((st.session_state.tripwire_pt1, st.session_state.tripwire_pt2), d_threshold)
+                        save_camera_profile(
+                            source=video_path,
+                            pt1=st.session_state.tripwire_pt1,
+                            pt2=st.session_state.tripwire_pt2,
+                            d_threshold=d_threshold
+                        )
                         st.toast(f"🎉 Đã cập nhật vạch ảo: A({x1_d}, {y1_d}) ➔ B({x2_d}, {y2_d})", icon="✅")
                         st.rerun()
                 else:
@@ -376,7 +432,12 @@ with st.expander("✏️ CÔNG CỤ KẺ VẠCH PHÂN CÁCH TRỰC TIẾP TRÊN 
                             st.session_state.tripwire_pt1 = pt_a
                             st.session_state.tripwire_pt2 = pt_b
                             st.session_state.temp_click_pts = []
-                            calibrator.save_config((st.session_state.tripwire_pt1, st.session_state.tripwire_pt2), d_threshold)
+                            save_camera_profile(
+                                source=video_path,
+                                pt1=st.session_state.tripwire_pt1,
+                                pt2=st.session_state.tripwire_pt2,
+                                d_threshold=d_threshold
+                            )
                             st.toast(f"🎉 Đã hoàn tất vạch ảo: A{pt_a} ➔ B{pt_b}", icon="✅")
                             st.rerun()
 
@@ -413,9 +474,16 @@ log_placeholder = st.empty()
 
 
 # ==============================================================================
-# VÒNG LẶP XỬ LÝ VIDEO THỜI GIAN THỰC
+# VÒNG LẶP XỬ LÝ VIDEO THỜI GIAN THỰC (ROBUST LIVE-STREAM & RECONNECT)
 # ==============================================================================
 if st.session_state.is_running and video_path is not None:
+    norm_video_src = normalize_video_source(video_path)
+    is_live_stream = isinstance(norm_video_src, int) or (
+        isinstance(norm_video_src, str) and (
+            norm_video_src.startswith("rtsp://") or norm_video_src.startswith("http://") or norm_video_src.startswith("https://")
+        )
+    )
+
     # Khởi tạo 2 engines độc lập
     env_engine = AdaptiveEnvironmentEngine(
         night_threshold=75.0,
@@ -433,27 +501,62 @@ if st.session_state.is_running and video_path is not None:
         use_internal_subtractor=False
     )
 
-    cap = cv2.VideoCapture(video_path)
+    def _open_stream_capture(src):
+        if isinstance(src, int) and sys.platform.startswith("win"):
+            c = cv2.VideoCapture(src, cv2.CAP_DSHOW)
+            if c.isOpened():
+                return c
+        return cv2.VideoCapture(src)
+
+    cap = _open_stream_capture(norm_video_src)
+    if isinstance(norm_video_src, int) and cap.isOpened():
+        for _ in range(5):
+            cap.read()
+
+    consecutive_drop_count = 0
 
     while cap.isOpened() and st.session_state.is_running:
         ret, frame = cap.read()
         if not ret or frame is None:
-            # Lặp lại video nếu kết thúc file - xóa cache đối tượng tránh đếm ảo
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            detector.tracker.objects.clear()
-            detector.tracker.boxes.clear()
-            detector.tracker.disappeared.clear()
-            detector.tracker.history.clear()
-            detector.tripwire.states.clear()
-            continue
+            consecutive_drop_count += 1
+            if is_live_stream:
+                # Live stream hoặc webcam rớt frame -> KHÔNG reset tracker và KHÔNG tua pos 0
+                time.sleep(0.05)
+                if consecutive_drop_count >= 50:
+                    # Thử mở lại kết nối
+                    cap.release()
+                    time.sleep(0.5)
+                    cap = _open_stream_capture(norm_video_src)
+                    consecutive_drop_count = 0
+                continue
+            else:
+                # Lặp lại video nếu kết thúc file - xóa cache đối tượng tránh đếm ảo
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                detector.tracker.objects.clear()
+                detector.tracker.boxes.clear()
+                detector.tracker.disappeared.clear()
+                detector.tracker.history.clear()
+                detector.tripwire.states.clear()
+                consecutive_drop_count = 0
+                continue
+
+        consecutive_drop_count = 0
 
         if st.session_state.reset_trigger:
             detector.reset()
             env_engine.reset()
             st.session_state.reset_trigger = False
 
+        # Chuẩn hóa độ phân giải xử lý (Processing Normalization)
+        raw_h, raw_w = frame.shape[:2]
+        if raw_w > 640:
+            target_h = int(raw_h * 640 / raw_w)
+            proc_frame = cv2.resize(frame, (640, target_h), interpolation=cv2.INTER_AREA)
+        else:
+            proc_frame = frame
+
         # 1. Module 3: Thích ứng môi trường
-        clean_mask, enhanced_frame, telemetry = env_engine.process(frame)
+        clean_mask, enhanced_frame, telemetry = env_engine.process(proc_frame)
 
         # 2. Module 1: Phân đoạn, Tracking, Vạch ảo và Vẽ
         env_status_str = "NIGHT (CLAHE)" if telemetry["is_night_mode"] else "DAY"
@@ -497,6 +600,9 @@ if st.session_state.is_running and video_path is not None:
             log_placeholder.table(st.session_state.events_log)
 
         # Giữ nhịp hiển thị
-        time.sleep(0.01)
+        if is_live_stream:
+            time.sleep(0.005)
+        else:
+            time.sleep(0.02)
 
     cap.release()
