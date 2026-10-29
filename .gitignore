@@ -25,3 +25,12 @@ Thumbs.db
 
 # Heavy sample video if wanted (surveillance.avi is ~61MB, git handles <100MB fine, but good to keep optional)
 # data/samples/*.avi
+
+# Markdown files
+CAMERA_CONNECTION_IMPLEMENTATION_PLAN.md
+CAMERA_CONNECTION_PROBLEMS_AND_SOLUTIONS.md
+*.md
+!Do_An_Dem_Va_Theo_Doi_Nguoi_Qua_Lai.md
+!README.md
+!TONG_HOP_TIEN_DO_VA_SUA_LOI.md
+!frontend/README.md
