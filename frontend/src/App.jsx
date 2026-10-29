@@ -21,7 +21,11 @@ import {
   WifiOff,
   Maximize2,
   Play,
-  Pause
+  Pause,
+  RefreshCw,
+  VideoOff,
+  Globe,
+  X
 } from 'lucide-react';
 
 export default function App() {
@@ -35,6 +39,10 @@ export default function App() {
     is_night_mode: false,
     is_paused: false,
     mean_luminance: 100.0,
+    camera_status: 'online',
+    active_source: '',
+    resolution: [320, 240],
+    dropped_frames: 0,
     tripwire: { pt1: [80, 160], pt2: [280, 160], d_threshold: 35.0 },
     events: []
   });
@@ -46,6 +54,15 @@ export default function App() {
   const [dThreshold, setDThreshold] = useState(35.0);
   const [toastMessage, setToastMessage] = useState(null);
   const [showConfigDrawer, setShowConfigDrawer] = useState(false);
+
+  // Device Management State
+  const [devices, setDevices] = useState([]);
+  const [activeSource, setActiveSource] = useState('');
+  const [isScanning, setIsScanning] = useState(false);
+  const [showRtspModal, setShowRtspModal] = useState(false);
+  const [rtspInput, setRtspInput] = useState('');
+  const [streamError, setStreamError] = useState(false);
+  const [streamKey, setStreamKey] = useState(Date.now());
 
   // Canvas drawing state for tripwire
   const canvasRef = useRef(null);
@@ -61,10 +78,87 @@ export default function App() {
     ? 'ws://localhost:8000/ws/stats'
     : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/stats`;
 
+  // Dynamic Native Video Resolution
+  const nativeW = stats.resolution && stats.resolution[0] > 0 ? stats.resolution[0] : 320;
+  const nativeH = stats.resolution && stats.resolution[1] > 0 ? stats.resolution[1] : 240;
+
   // Show Swiss Minimalist Toast
   const triggerToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3200);
+  };
+
+  // Device Discovery & Fetch
+  const fetchDevices = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/devices`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.devices) {
+          setDevices(data.devices);
+          if (data.active_source !== undefined) {
+            setActiveSource(String(data.active_source));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not fetch devices list', e);
+    }
+  }, [API_BASE]);
+
+  // Scan hardware devices
+  const handleScanDevices = async () => {
+    setIsScanning(true);
+    triggerToast('Đang quét các cổng camera phần cứng...');
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/devices/scan`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setDevices(data.devices || []);
+        triggerToast(`Đã tìm thấy ${data.devices?.length || 0} thiết bị camera/video`);
+      }
+    } catch (e) {
+      triggerToast('Quét thiết bị thất bại');
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  // Switch Video Source
+  const handleSwitchSource = async (newSource) => {
+    if (newSource === 'CUSTOM_RTSP') {
+      setShowRtspModal(true);
+      return;
+    }
+
+    triggerToast(`Đang chuyển sang nguồn: ${newSource}...`);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/devices/switch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: newSource })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setActiveSource(String(newSource));
+        setStreamError(false);
+        setStreamKey(Date.now());
+        triggerToast(`Kết nối thành công tới ${newSource}`);
+      } else {
+        triggerToast(data.message || 'Không thể chuyển đổi nguồn camera');
+      }
+    } catch (e) {
+      triggerToast('Lỗi khi gửi yêu cầu chuyển camera');
+    }
+  };
+
+  // Submit custom RTSP URL
+  const handleConnectRtsp = async (e) => {
+    e.preventDefault();
+    if (!rtspInput.trim()) return;
+    setShowRtspModal(false);
+    await handleSwitchSource(rtspInput.trim());
+    setRtspInput('');
   };
 
   const handleTogglePlayback = async () => {
@@ -82,8 +176,17 @@ export default function App() {
     }
   };
 
+  // Retry Stream when interrupted
+  const handleRetryStream = () => {
+    setStreamError(false);
+    setStreamKey(Date.now());
+    triggerToast('Đang làm mới luồng video...');
+  };
+
   // 1. Initial Config Fetch & WebSocket Setup
   useEffect(() => {
+    fetchDevices();
+
     // Fetch initial config
     fetch(`${API_BASE}/api/v1/config`)
       .then((res) => (res.ok ? res.json() : null))
@@ -91,6 +194,9 @@ export default function App() {
         if (data) {
           setCurrentLine({ pt1: data.pt1, pt2: data.pt2 });
           setDThreshold(data.d_threshold || 35.0);
+          if (data.video_source) {
+            setActiveSource(String(data.video_source));
+          }
         }
       })
       .catch(() => {});
@@ -113,6 +219,9 @@ export default function App() {
             setStats(data);
             if (data.is_paused !== undefined) {
               setIsPaused(data.is_paused);
+            }
+            if (data.active_source !== undefined) {
+              setActiveSource(String(data.active_source));
             }
             if (
               data.tripwire &&
@@ -150,9 +259,9 @@ export default function App() {
       if (socket) socket.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [API_BASE, WS_URL, isDragging]);
+  }, [API_BASE, WS_URL, isDragging, fetchDevices]);
 
-  // 2. Tripwire Canvas Render
+  // 2. Tripwire Canvas Render with DYNAMIC RESOLUTION
   const renderCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -164,9 +273,7 @@ export default function App() {
 
     if (!currentLine.pt1 || !currentLine.pt2) return;
 
-    // Scale factors: native video resolution is 320x240
-    const nativeW = 320;
-    const nativeH = 240;
+    // Scale factors using dynamic native video resolution
     const sx = width / nativeW;
     const sy = height / nativeH;
 
@@ -246,7 +353,7 @@ export default function App() {
 
     drawPoint(x1, y1, `A (${Math.round(currentLine.pt1[0])}, ${Math.round(currentLine.pt1[1])})`, true);
     drawPoint(x2, y2, `B (${Math.round(currentLine.pt2[0])}, ${Math.round(currentLine.pt2[1])})`, false);
-  }, [currentLine, dThreshold, isCalibrating]);
+  }, [currentLine, dThreshold, isCalibrating, nativeW, nativeH]);
 
   useEffect(() => {
     renderCanvas();
@@ -267,13 +374,13 @@ export default function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, [renderCanvas]);
 
-  // 3. Pointer Drag Interaction for Tripwire Calibration
+  // 3. Pointer Drag Interaction for Tripwire Calibration (Dynamic Normalization)
   const getNormalizedCoords = (clientX, clientY) => {
     if (!canvasRef.current) return [0, 0];
     const rect = canvasRef.current.getBoundingClientRect();
     const nx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     const ny = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
-    return [Math.round(nx * 320), Math.round(ny * 240)];
+    return [Math.round(nx * nativeW), Math.round(ny * nativeH)];
   };
 
   const handlePointerDown = (e) => {
@@ -386,6 +493,8 @@ export default function App() {
     triggerToast('Event audit log exported to CSV');
   };
 
+  const isCameraOffline = stats.camera_status === 'offline' || streamError;
+
   return (
     <div className="app-container">
       {/* Toast Notification */}
@@ -415,6 +524,51 @@ export default function App() {
         </div>
       )}
 
+      {/* Modal Nhập RTSP Stream URL */}
+      {showRtspModal && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <div className="modal-header">
+              <div className="modal-title">
+                <Globe size={18} color="#E2E8F0" />
+                <span>Kết Nối IP Camera (RTSP / HTTP)</span>
+              </div>
+              <button
+                className="btn btn-secondary btn-icon-only"
+                onClick={() => setShowRtspModal(false)}
+              >
+                <X size={15} />
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Nhập đường dẫn luồng video IP Camera trực tiếp của doanh nghiệp hoặc camera an ninh:
+            </p>
+            <form onSubmit={handleConnectRtsp}>
+              <input
+                type="text"
+                placeholder="rtsp://admin:password@192.168.1.100:554/stream1"
+                value={rtspInput}
+                onChange={(e) => setRtspInput(e.target.value)}
+                className="modal-input"
+                autoFocus
+              />
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowRtspModal(false)}
+                >
+                  Hủy
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  Kết Nối
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Top Navigation Bar */}
       <header className="header">
         <div className="brand-section">
@@ -425,6 +579,35 @@ export default function App() {
             <span className="brand-name">HumanCheck</span>
             <span className="brand-tag">Swiss DIP Surveillance Suite</span>
           </div>
+        </div>
+
+        {/* Device Selector & Quick Hardware Scan */}
+        <div className="device-selector-group">
+          <Camera size={14} color="#94A3B8" />
+          <select
+            className="device-select"
+            value={activeSource}
+            onChange={(e) => handleSwitchSource(e.target.value)}
+            title="Chọn camera hoặc nguồn video giám sát"
+          >
+            {devices.map((dev) => (
+              <option key={String(dev.id)} value={String(dev.id)}>
+                {dev.type === 'webcam' ? '📹 ' : dev.type === 'rtsp' ? '🌐 ' : '📁 '}
+                {dev.name} ({dev.resolution ? `${dev.resolution[0]}x${dev.resolution[1]}` : ''})
+              </option>
+            ))}
+            <option value="CUSTOM_RTSP">🌐 + Nhập địa chỉ IP Camera (RTSP)...</option>
+          </select>
+
+          <button
+            className="btn btn-secondary btn-icon-only"
+            style={{ width: 26, height: 26, padding: 0 }}
+            onClick={handleScanDevices}
+            disabled={isScanning}
+            title="Quét lại cổng thiết bị camera USB"
+          >
+            <RefreshCw size={12} className={isScanning ? 'spin' : ''} />
+          </button>
         </div>
 
         <div className="header-status-group">
@@ -448,12 +631,18 @@ export default function App() {
           </div>
 
           <div className="status-pill">
-            {connected ? (
+            {connected && !isCameraOffline ? (
               <Wifi size={14} color="#10B981" />
             ) : (
               <WifiOff size={14} color="#EF4444" />
             )}
-            <span>{connected ? 'Sync Online' : 'Connecting'}</span>
+            <span>
+              {isCameraOffline
+                ? 'Camera Offline'
+                : connected
+                ? 'Sync Online'
+                : 'Connecting'}
+            </span>
           </div>
         </div>
 
@@ -561,7 +750,7 @@ export default function App() {
           </div>
           <div className="metric-footer">
             <Activity size={12} />
-            <span>O(1) Spatial Moments & Euclidean Tracking</span>
+            <span>{nativeW}×{nativeH}px Processing Canvas</span>
           </div>
         </div>
       </section>
@@ -648,7 +837,7 @@ export default function App() {
                   : 'Module 3 Foreground Mask Viewport'}
               </span>
               <span className="panel-badge">
-                {isCalibrating ? 'Drag Mouse to Draw Tripwire' : 'Realtime Stream'}
+                {isCalibrating ? 'Drag Mouse to Draw Tripwire' : `${nativeW}×${nativeH} Stream`}
               </span>
             </div>
 
@@ -683,14 +872,38 @@ export default function App() {
           <div className="viewport-container" ref={viewportRef}>
             {/* Live Video Feed Image */}
             <img
+              key={streamKey}
               src={
                 activeTab === 'video'
-                  ? `${API_BASE}/api/v1/stream/video`
-                  : `${API_BASE}/api/v1/stream/mask`
+                  ? `${API_BASE}/api/v1/stream/video?t=${streamKey}`
+                  : `${API_BASE}/api/v1/stream/mask?t=${streamKey}`
               }
               alt="Surveillance Video Feed"
               className="viewport-stream"
+              onError={() => setStreamError(true)}
+              onLoad={() => setStreamError(false)}
             />
+
+            {/* Offline Backdrop with VideoOff & Retry Action */}
+            {isCameraOffline && (
+              <div className="offline-backdrop">
+                <div className="offline-icon-box">
+                  <VideoOff size={26} />
+                </div>
+                <div className="offline-title">Tín hiệu Camera bị gián đoạn</div>
+                <div className="offline-subtitle">
+                  Thiết bị camera hoặc nguồn stream hiện không khả dụng. Hệ thống đang tự động thử lại kết nối...
+                </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleRetryStream}
+                  style={{ marginTop: 6 }}
+                >
+                  <RefreshCw size={14} />
+                  <span>Thử lại ngay</span>
+                </button>
+              </div>
+            )}
 
             {/* Stream Paused Badge */}
             {isPaused && (
@@ -783,7 +996,7 @@ export default function App() {
             </div>
             <div className="mini-viewport-content">
               <img
-                src={`${API_BASE}/api/v1/stream/mask`}
+                src={`${API_BASE}/api/v1/stream/mask?t=${streamKey}`}
                 alt="Foreground Mask"
                 className="mini-viewport-stream"
               />
